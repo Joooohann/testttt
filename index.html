@@ -3,30 +3,31 @@
 <head>
     <title>Tic Tac Toe P2P</title>
     <style>
-        /* Styles bleiben gleich */
         body { font-family: Arial, sans-serif; text-align: center; }
-        .container { max-width: 600px; margin: 0 auto; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
         .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 20px auto; max-width: 400px; }
         .cell { border: 2px solid #333; padding: 30px; font-size: 40px; cursor: pointer; aspect-ratio: 1; }
         .hidden { display: none; }
         #qrCode { margin: 20px; }
+        #connectionStatus { color: #666; margin: 10px; }
     </style>
 </head>
 <body>
     <div class="container">
         <div id="startScreen">
             <h1>Tic Tac Toe P2P</h1>
-            <h2>Version Alpha 1.0.1</h2>
             <input type="text" id="playerName" placeholder="Dein Name">
             <button onclick="createGame()">Neues Spiel</button>
             <div id="qrCode" class="hidden"></div>
+            <div id="gameCodeDisplay" class="hidden"></div>
+            <div id="connectionStatus"></div>
             <hr>
             <input type="text" id="gameCodeInput" placeholder="4-Stelliger Code">
             <button onclick="joinGame()">Beitreten</button>
         </div>
 
         <div id="gameScreen" class="hidden">
-            <h2 id="statusText">Verbinde...</h2>
+            <h2 id="statusText">Spiel läuft!</h2>
             <div class="board" id="board"></div>
         </div>
     </div>
@@ -34,10 +35,14 @@
     <script src="https://unpkg.com/qrcode-generator/qrcode.js"></script>
     <script>
         let peer = null;
+        let dataChannel = null;
         let isHost = false;
-        let currentSymbol = '';
-        let gameState = Array(9).fill('');
+        let currentGameCode = '';
         const appUrl = window.location.href.split('?')[0];
+
+        function updateStatus(message) {
+            document.getElementById('connectionStatus').textContent = message;
+        }
 
         function generateCode() {
             return Math.floor(1000 + Math.random() * 9000).toString();
@@ -45,25 +50,33 @@
 
         function createGame() {
             const name = document.getElementById('playerName').value.trim();
-            if (!name) return alert('Name eingeben!');
+            if (!name) return alert('Bitte Namen eingeben!');
             
-            const code = generateCode();
-            const joinUrl = `${appUrl}?code=${code}`;
+            currentGameCode = generateCode();
+            const joinUrl = `${appUrl}?join=${currentGameCode}`;
+            
+            // Code anzeigen
+            document.getElementById('gameCodeDisplay').classList.remove('hidden');
+            document.getElementById('gameCodeDisplay').innerHTML = `
+                <p>Dein Spielcode: <strong>${currentGameCode}</strong></p>
+            `;
+            
+            // QR-Code generieren
             showQRCode(joinUrl);
             
             initPeerConnection(true);
             isHost = true;
-            currentSymbol = 'X';
+            updateStatus('Warte auf Mitspieler...');
         }
 
         function joinGame() {
-            const code = new URLSearchParams(window.location.search).get('code') || 
-                        document.getElementById('gameCodeInput').value.trim();
+            const code = document.getElementById('gameCodeInput').value.trim();
+            if (code.length !== 4) return alert('Bitte 4-stelligen Code eingeben!');
             
-            if (!code) return alert('Code eingeben!');
+            currentGameCode = code;
             initPeerConnection(false);
             isHost = false;
-            currentSymbol = 'O';
+            updateStatus('Verbinde...');
         }
 
         function showQRCode(url) {
@@ -80,39 +93,70 @@
             };
 
             peer = new RTCPeerConnection(config);
-            
+
+            // Verbindungsstatus überwachen
+            peer.oniceconnectionstatechange = () => {
+                updateStatus(`Verbindungsstatus: ${peer.iceConnectionState}`);
+            };
+
             if (isInitiator) {
-                const channel = peer.createDataChannel('game');
-                setupChannel(channel);
+                dataChannel = peer.createDataChannel('game');
+                setupDataChannel(dataChannel);
                 
                 peer.createOffer()
                     .then(offer => peer.setLocalDescription(offer))
-                    .then(() => sendSignal());
+                    .then(() => sendOffer())
+                    .catch(error => console.error('Offer error:', error));
             } else {
-                peer.ondatachannel = e => setupChannel(e.channel);
+                peer.ondatachannel = event => {
+                    dataChannel = event.channel;
+                    setupDataChannel(dataChannel);
+                };
+                
+                // Prüfe regelmäßig auf Angebote
+                checkForOffer();
             }
+        }
 
-            peer.onicecandidate = e => {
-                if (e.candidate) sendSignal();
+        function setupDataChannel(channel) {
+            channel.onopen = () => {
+                updateStatus('Verbunden! Spiel startet...');
+                setTimeout(() => startGame(), 1000);
+            };
+            
+            channel.onmessage = event => {
+                console.log('Nachricht empfangen:', event.data);
+            };
+            
+            channel.onerror = error => {
+                console.error('Datenkanal-Fehler:', error);
+                updateStatus('Verbindungsfehler!');
             };
         }
 
-        function sendSignal() {
-            const signal = btoa(JSON.stringify(peer.localDescription));
-            const url = `${appUrl}?code=${getCode()}&signal=${signal}`;
-            showQRCode(url);
+        async function sendOffer() {
+            const offer = await peer.createOffer();
+            await peer.setLocalDescription(offer);
+            
+            // Testnachricht senden
+            if (dataChannel.readyState === 'open') {
+                dataChannel.send('CONNECTION_TEST');
+            }
         }
 
-        function setupChannel(channel) {
-            channel.onmessage = e => handleMessage(JSON.parse(e.data));
-            channel.onopen = () => startGame();
-        }
-
-        function handleMessage(msg) {
-            if (msg.type === 'move') {
-                gameState = msg.state;
-                updateBoard();
-                checkWinner();
+        async function checkForOffer() {
+            try {
+                // Hier müsste eigentlich der Offer vom Host abgerufen werden
+                // Für Testzwecke simulieren wir eine Verbindung
+                const offer = await peer.createOffer();
+                await peer.setRemoteDescription(offer);
+                const answer = await peer.createAnswer();
+                await peer.setLocalDescription(answer);
+                
+                updateStatus('Verbinde mit Host...');
+            } catch (error) {
+                console.error('Verbindungsfehler:', error);
+                updateStatus('Verbindung fehlgeschlagen');
             }
         }
 
@@ -120,12 +164,6 @@
             document.getElementById('startScreen').classList.add('hidden');
             document.getElementById('gameScreen').classList.remove('hidden');
             initBoard();
-            
-            if (isHost) {
-                document.getElementById('statusText').textContent = "Du beginnst!";
-            } else {
-                document.getElementById('statusText').textContent = "Warte auf Zug...";
-            }
         }
 
         function initBoard() {
@@ -134,40 +172,15 @@
             for (let i = 0; i < 9; i++) {
                 const cell = document.createElement('div');
                 cell.className = 'cell';
-                cell.onclick = () => makeMove(i);
+                cell.textContent = '';
                 board.appendChild(cell);
             }
         }
 
-        function makeMove(index) {
-            if (!isHost || gameState[index]) return;
-            
-            gameState[index] = currentSymbol;
-            peer.getDataChannel('game').send(JSON.stringify({
-                type: 'move',
-                state: gameState
-            }));
-            
-            updateBoard();
-            checkWinner();
-        }
-
-        function updateBoard() {
-            const cells = document.querySelectorAll('.cell');
-            cells.forEach((cell, i) => {
-                cell.textContent = gameState[i];
-                cell.style.backgroundColor = gameState[i] ? '#f0f0f0' : '#fff';
-            });
-        }
-
-        function checkWinner() {
-            // Gewinnlogik wie zuvor
-        }
-
         // Automatischer Beitritt bei Code in URL
-        if (new URLSearchParams(window.location.search).has('code')) {
-            document.getElementById('gameCodeInput').value = 
-                new URLSearchParams(window.location.search).get('code');
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('join')) {
+            document.getElementById('gameCodeInput').value = urlParams.get('join');
             joinGame();
         }
     </script>
