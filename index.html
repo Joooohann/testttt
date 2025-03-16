@@ -1,0 +1,128 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tic Tac Toe</title>
+    <style>
+        .container { text-align: center; margin-top: 50px; }
+        .board { display: grid; grid-template-columns: repeat(3, 100px); gap: 5px; margin: 20px auto; }
+        .cell { width: 100px; height: 100px; border: 2px solid #000; font-size: 40px; cursor: pointer; }
+        .hidden { display: none; }
+        #gameCode { font-size: 24px; margin: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="startScreen">
+            <input type="text" id="playerName" placeholder="Dein Name">
+            <button onclick="createGame()">Spiel erstellen</button>
+            <br><br>
+            <input type="text" id="gameCodeInput" placeholder="Spielcode">
+            <button onclick="joinGame()">Code eingeben</button>
+        </div>
+        
+        <div id="waitingScreen" class="hidden">
+            <p>Warte auf Mitspieler...</p>
+            <p>Dein Spielcode: <span id="gameCode"></span></p>
+        </div>
+
+        <div id="gameScreen" class="hidden">
+            <h2>Tic Tac Toe</h2>
+            <p>Spieler: <span id="player1"></span> (X) vs <span id="player2"></span> (O)</p>
+            <p id="turnInfo"></p>
+            <div class="board" id="board"></div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let currentGame = null;
+        let playerSymbol = '';
+        let playerName = '';
+
+        // Spiel erstellen
+        function createGame() {
+            playerName = document.getElementById('playerName').value;
+            if (!playerName) return alert('Bitte Namen eingeben');
+            socket.emit('createGame', playerName);
+            document.getElementById('startScreen').classList.add('hidden');
+            document.getElementById('waitingScreen').classList.remove('hidden');
+        }
+
+        // Spiel beitreten
+        function joinGame() {
+            playerName = document.getElementById('playerName').value;
+            const code = document.getElementById('gameCodeInput').value;
+            if (!playerName || !code) return alert('Bitte Namen und Code eingeben');
+            socket.emit('joinGame', { code, playerName });
+        }
+
+        // Spielbrett initialisieren
+        function initBoard() {
+            const board = document.getElementById('board');
+            board.innerHTML = '';
+            for (let i = 0; i < 9; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.dataset.index = i;
+                cell.addEventListener('click', handleCellClick);
+                board.appendChild(cell);
+            }
+        }
+
+        // Zellenklick behandeln
+        function handleCellClick(e) {
+            if (!currentGame || currentGame.currentPlayer !== playerSymbol) return;
+            const index = e.target.dataset.index;
+            socket.emit('makeMove', { index, code: currentGame.code });
+        }
+
+        // Socket Events
+        socket.on('gameCreated', (code) => {
+            document.getElementById('gameCode').textContent = code;
+        });
+
+        socket.on('gameJoined', (game) => {
+            currentGame = game;
+            playerSymbol = game.players.find(p => p.name === playerName).symbol;
+            
+            document.getElementById('startScreen').classList.add('hidden');
+            document.getElementById('waitingScreen').classList.add('hidden');
+            document.getElementById('gameScreen').classList.remove('hidden');
+            
+            document.getElementById('player1').textContent = game.players[0].name;
+            document.getElementById('player2').textContent = game.players[1].name;
+            
+            initBoard();
+            updateBoard(game);
+        });
+
+        socket.on('gameUpdate', (game) => {
+            currentGame = game;
+            updateBoard(game);
+        });
+
+        socket.on('gameError', (message) => {
+            alert(message);
+        });
+
+        // Spielbrett aktualisieren
+        function updateBoard(game) {
+            const cells = document.getElementsByClassName('cell');
+            game.board.forEach((symbol, index) => {
+                cells[index].textContent = symbol || '';
+            });
+            
+            const turnInfo = document.getElementById('turnInfo');
+            if (game.winner) {
+                turnInfo.textContent = game.winner === 'draw' 
+                    ? 'Unentschieden!' 
+                    : `Spieler ${game.winner} hat gewonnen!`;
+            } else {
+                turnInfo.textContent = `Am Zug: ${game.players.find(p => p.symbol === game.currentPlayer).name}`;
+            }
+        }
+    </script>
+</body>
+</html>
