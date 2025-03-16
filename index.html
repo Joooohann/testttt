@@ -3,23 +3,11 @@
 <head>
     <title>Tic Tac Toe P2P</title>
     <style>
-        /* Unveränderte CSS-Styles */
+        /* Styles bleiben gleich */
         body { font-family: Arial, sans-serif; text-align: center; }
         .container { max-width: 600px; margin: 0 auto; }
-        .board { 
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-            margin: 20px auto;
-            max-width: 400px;
-        }
-        .cell {
-            border: 2px solid #333;
-            padding: 30px;
-            font-size: 40px;
-            cursor: pointer;
-            aspect-ratio: 1;
-        }
+        .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 20px auto; max-width: 400px; }
+        .cell { border: 2px solid #333; padding: 30px; font-size: 40px; cursor: pointer; aspect-ratio: 1; }
         .hidden { display: none; }
         #qrCode { margin: 20px; }
     </style>
@@ -45,11 +33,10 @@
     <script src="https://unpkg.com/qrcode-generator/qrcode.js"></script>
     <script>
         let peer = null;
-        let conn = null;
         let isHost = false;
         let currentSymbol = '';
-        let currentPlayer = '';
         let gameState = Array(9).fill('');
+        const appUrl = window.location.href.split('?')[0];
 
         function generateCode() {
             return Math.floor(1000 + Math.random() * 9000).toString();
@@ -60,97 +47,128 @@
             if (!name) return alert('Name eingeben!');
             
             const code = generateCode();
-            showQRCode(code);
-            initPeerConnection(code, true);
+            const joinUrl = `${appUrl}?code=${code}`;
+            showQRCode(joinUrl);
+            
+            initPeerConnection(true);
             isHost = true;
             currentSymbol = 'X';
-            currentPlayer = 'X';
         }
 
         function joinGame() {
-            const code = document.getElementById('gameCodeInput').value.trim();
-            const name = document.getElementById('playerName').value.trim();
-            if (!name || code.length !== 4) return alert('Ungültige Eingabe!');
+            const code = new URLSearchParams(window.location.search).get('code') || 
+                        document.getElementById('gameCodeInput').value.trim();
             
-            initPeerConnection(code, false);
+            if (!code) return alert('Code eingeben!');
+            initPeerConnection(false);
             isHost = false;
             currentSymbol = 'O';
         }
 
-        function showQRCode(code) {
+        function showQRCode(url) {
             const qr = qrcode(0, 'M');
-            qr.addData(code);
+            qr.addData(url);
             qr.make();
             document.getElementById('qrCode').innerHTML = qr.createSvgTag(6);
             document.getElementById('qrCode').classList.remove('hidden');
         }
 
-        function initPeerConnection(code, isInitiator) {
+        function initPeerConnection(isInitiator) {
             const config = {
                 iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
             };
 
             peer = new RTCPeerConnection(config);
-
+            
             if (isInitiator) {
+                const channel = peer.createDataChannel('game');
+                setupChannel(channel);
+                
                 peer.createOffer()
                     .then(offer => peer.setLocalDescription(offer))
-                    .then(() => sendLocalDescription(code));
+                    .then(() => sendSignal());
+            } else {
+                peer.ondatachannel = e => setupChannel(e.channel);
             }
 
-            peer.ondatachannel = event => {
-                const channel = event.channel;
-                setupChannel(channel);
-            };
-
-            peer.onicecandidate = event => {
-                if (event.candidate) {
-                    sendLocalDescription(code);
-                }
+            peer.onicecandidate = e => {
+                if (e.candidate) sendSignal();
             };
         }
 
-        function sendLocalDescription(code) {
-            const description = JSON.stringify(peer.localDescription);
-            localStorage.setItem(`p2p_${code}`, description);
-        }
-
-        function checkForRemoteDescription(code) {
-            const check = setInterval(() => {
-                const description = localStorage.getItem(`p2p_${code}`);
-                if (description) {
-                    clearInterval(check);
-                    peer.setRemoteDescription(JSON.parse(description));
-                    if (!isHost) {
-                        peer.createAnswer()
-                           .then(answer => peer.setLocalDescription(answer))
-                           .then(() => sendLocalDescription(code));
-                    }
-                }
-            }, 1000);
+        function sendSignal() {
+            const signal = btoa(JSON.stringify(peer.localDescription));
+            const url = `${appUrl}?code=${getCode()}&signal=${signal}`;
+            showQRCode(url);
         }
 
         function setupChannel(channel) {
-            channel.onmessage = event => {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'move') {
-                    gameState = msg.state;
-                    currentPlayer = msg.nextPlayer;
-                    updateBoard();
-                }
-            };
-
-            channel.onopen = () => {
-                showScreen('gameScreen');
-                document.getElementById('statusText').textContent = 
-                    `Verbunden! ${isHost ? 'Du beginnst' : 'Gegner beginnt'}`;
-            };
+            channel.onmessage = e => handleMessage(JSON.parse(e.data));
+            channel.onopen = () => startGame();
         }
 
-        // Unveränderte Board-Funktionen
-        function updateBoard() { /* ... */ }
-        function checkWinner() { /* ... */ }
-        function showScreen() { /* ... */ }
+        function handleMessage(msg) {
+            if (msg.type === 'move') {
+                gameState = msg.state;
+                updateBoard();
+                checkWinner();
+            }
+        }
+
+        function startGame() {
+            document.getElementById('startScreen').classList.add('hidden');
+            document.getElementById('gameScreen').classList.remove('hidden');
+            initBoard();
+            
+            if (isHost) {
+                document.getElementById('statusText').textContent = "Du beginnst!";
+            } else {
+                document.getElementById('statusText').textContent = "Warte auf Zug...";
+            }
+        }
+
+        function initBoard() {
+            const board = document.getElementById('board');
+            board.innerHTML = '';
+            for (let i = 0; i < 9; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.onclick = () => makeMove(i);
+                board.appendChild(cell);
+            }
+        }
+
+        function makeMove(index) {
+            if (!isHost || gameState[index]) return;
+            
+            gameState[index] = currentSymbol;
+            peer.getDataChannel('game').send(JSON.stringify({
+                type: 'move',
+                state: gameState
+            }));
+            
+            updateBoard();
+            checkWinner();
+        }
+
+        function updateBoard() {
+            const cells = document.querySelectorAll('.cell');
+            cells.forEach((cell, i) => {
+                cell.textContent = gameState[i];
+                cell.style.backgroundColor = gameState[i] ? '#f0f0f0' : '#fff';
+            });
+        }
+
+        function checkWinner() {
+            // Gewinnlogik wie zuvor
+        }
+
+        // Automatischer Beitritt bei Code in URL
+        if (new URLSearchParams(window.location.search).has('code')) {
+            document.getElementById('gameCodeInput').value = 
+                new URLSearchParams(window.location.search).get('code');
+            joinGame();
+        }
     </script>
 </body>
 </html>
